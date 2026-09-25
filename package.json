@@ -1,0 +1,33 @@
+{
+  "name": "essl-attendance-agent",
+  "version": "1.0.0",
+  "description": "Production eSSL biometric attendance synchronization background service for Windows",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "essl-agent": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js start",
+    "dev": "node --import tsx src/index.ts start",
+    "test": "node --import tsx --test tests/*.test.ts",
+    "test:e2e": "node scripts/test-e2e.js",
+    "status": "node dist/index.js status",
+    "sync": "node dist/index.js sync",
+    "sync:full": "node dist/index.js sync --full",
+    "sync:dry-run": "node dist/index.js sync --dry-run"
+  },
+  "author": "eSSL Sync Team",
+  "license": "ISC",
+  "dependencies": {
+    "dotenv": "^16.4.7",
+    "mssql": "^11.0.1"
+  },
+  "devDependencies": {
+    "@types/mssql": "^9.0.5",
+    "@types/node": "^22.10.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}

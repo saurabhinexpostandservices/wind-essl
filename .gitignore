@@ -1,0 +1,23 @@
+# Dependency directories
+node_modules/
+
+# TypeScript build output
+dist/
+
+# Local Environment Variables
+.env
+
+# Local state database and json (runtime data)
+data/
+!data/.gitkeep
+
+# Logs
+logs/
+*.log
+
+# Test temporary directories
+tests/temp-*
+
+# OS files
+.DS_Store
+Thumbs.db
