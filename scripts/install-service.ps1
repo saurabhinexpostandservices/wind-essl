@@ -67,46 +67,45 @@ $ServiceDisplayName = "ESSL Attendance Sync"
 $NodeExe = (Get-Command node).Source
 $AgentScript = Join-Path $AppDir "dist\index.js"
 
-# Check if NSSM is available in PATH or project
-$nssm = Get-Command nssm -ErrorAction SilentlyContinue
+$WinSwExe = Join-Path $AppDir "scripts\essl-service.exe"
+$WinSwXml = Join-Path $AppDir "scripts\essl-service.xml"
 
-if ($nssm) {
-    Write-Host "  Registering service via NSSM..." -ForegroundColor Green
-    & nssm install $ServiceName "$NodeExe" "$AgentScript start"
-    & nssm set $ServiceName AppDirectory "$AppDir"
-    & nssm set $ServiceName DisplayName "$ServiceDisplayName"
-    & nssm set $ServiceName Description "eSSL Attendance Sync Background Service for eTimeTrackLite"
-    & nssm set $ServiceName Start SERVICE_AUTO_START
-    & nssm set $ServiceName AppStdout "$LogsDir\service-stdout.log"
-    & nssm set $ServiceName AppStderr "$LogsDir\service-stderr.log"
-    & nssm set $ServiceName AppRestartDelay 10000
+# Generate tailored XML with exact absolute paths for node.exe and app directory
+$xmlContent = @"
+<service>
+  <id>$ServiceName</id>
+  <name>$ServiceDisplayName</name>
+  <description>Production eSSL Biometric Attendance Synchronization Background Service for eTimeTrackLite</description>
+  <executable>$NodeExe</executable>
+  <arguments>`"$AgentScript`" start</arguments>
+  <workingdirectory>$AppDir</workingdirectory>
+  <startmode>Automatic</startmode>
+  <delayedAutoStart>false</delayedAutoStart>
+  <logpath>$LogsDir</logpath>
+  <log mode="roll-by-size">
+    <sizeThreshold>10240</sizeThreshold>
+    <keepFiles>14</keepFiles>
+  </log>
+  <onfailure action="restart" delay="10 sec"/>
+  <onfailure action="restart" delay="30 sec"/>
+  <onfailure action="restart" delay="60 sec"/>
+  <resetfailure>1 hour</resetfailure>
+  <env name="NODE_ENV" value="production"/>
+</service>
+"@
+Set-Content -Path $WinSwXml -Value $xmlContent -Encoding UTF8
+
+if (Test-Path $WinSwExe) {
+    Write-Host "  Installing via bundled WinSW ($WinSwExe)..." -ForegroundColor Green
+    # Stop & remove existing registration
+    & $WinSwExe stop 2>$null
+    & $WinSwExe uninstall 2>$null
+
+    & $WinSwExe install $WinSwXml
+    & $WinSwExe start
 } else {
-    # Download or use WinSW wrapper
-    $WinSwExe = Join-Path $AppDir "scripts\essl-service.exe"
-    $WinSwXml = Join-Path $AppDir "scripts\essl-service.xml"
-    Copy-Item "$PSScriptRoot\winsw.xml" $WinSwXml -Force
-
-    if (-not (Test-Path $WinSwExe)) {
-        Write-Host "  Downloading WinSW (Windows Service Wrapper)..." -ForegroundColor Yellow
-        $winSwUrl = "https://github.com/winsw/winsw/releases/download/v2.12.0/WinSW-x64.exe"
-        try {
-            [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-            Invoke-WebRequest -Uri $winSwUrl -OutFile $WinSwExe
-        } catch {
-            Write-Warning "WinSW auto-download failed. Using sc.exe fallback."
-        }
-    }
-
-    if (Test-Path $WinSwExe) {
-        Write-Host "  Installing via WinSW..." -ForegroundColor Green
-        & $WinSwExe install $WinSwXml
-    } else {
-        # sc.exe fallback
-        Write-Host "  Configuring service via Windows sc.exe..." -ForegroundColor Green
-        $binPath = "`"$NodeExe`" `"$AgentScript`" start"
-        sc.exe create $ServiceName binPath= $binPath start= auto DisplayName= "$ServiceDisplayName"
-        sc.exe failure $ServiceName reset= 3600 actions= restart/10000/restart/30000/restart/60000
-    }
+    Write-Warning "WinSW wrapper not found. Using Windows Task Scheduler ONSTART..."
+    schtasks /create /tn "$ServiceName" /tr "`"$NodeExe`" `"$AgentScript`" start" /sc ONSTART /ru "SYSTEM" /rl HIGHEST /f
 }
 
 # 6. Start the service

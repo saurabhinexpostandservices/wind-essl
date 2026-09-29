@@ -6,19 +6,18 @@ if %errorLevel% neq 0 (
     exit /b
 )
 
-set "SERVICE_NAME=ESSL_Attendance_Sync"
-set "NSSM_EXE=%~dp0nssm.exe"
+set "WINSW_EXE=%~dp0essl-service.exe"
 
-echo Removing Windows Service %SERVICE_NAME%...
-net stop %SERVICE_NAME% >nul 2>&1
-
-if exist "%NSSM_EXE%" (
-    "%NSSM_EXE%" remove "%SERVICE_NAME%" confirm
+echo Removing eSSL Attendance Sync Windows Service...
+if exist "%WINSW_EXE%" (
+    "%WINSW_EXE%" stop >nul 2>&1
+    "%WINSW_EXE%" uninstall
 ) else (
-    sc.exe delete "%SERVICE_NAME%"
+    net stop "essl-attendance-sync" >nul 2>&1
+    sc.exe delete "essl-attendance-sync" >nul 2>&1
+    net stop "ESSL_Attendance_Sync" >nul 2>&1
+    sc.exe delete "ESSL_Attendance_Sync" >nul 2>&1
 )
 
-sc.exe delete "essl-attendance-sync" >nul 2>&1
-
-echo [OK] Windows Service removed.
+echo [OK] Windows Service uninstalled completely from services.msc.
 pause

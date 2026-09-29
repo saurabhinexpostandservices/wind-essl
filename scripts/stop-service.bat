@@ -6,11 +6,17 @@ if %errorLevel% neq 0 (
     exit /b
 )
 
-set "SERVICE_NAME=ESSL_Attendance_Sync"
-echo Stopping service %SERVICE_NAME%...
-net stop %SERVICE_NAME%
+set "WINSW_EXE=%~dp0essl-service.exe"
 
-:: Also kill if port 8765 is still bound
+echo Stopping eSSL Attendance Sync Service...
+if exist "%WINSW_EXE%" (
+    "%WINSW_EXE%" stop
+) else (
+    net stop "essl-attendance-sync" >nul 2>&1
+    net stop "ESSL_Attendance_Sync" >nul 2>&1
+)
+
+:: Also free port 8765 if process hung
 for /f "tokens=5" %%a in ('netstat -aon 2^>nul ^| findstr ":8765" ^| findstr "LISTENING"') do (
     taskkill /F /PID %%a >nul 2>&1
 )

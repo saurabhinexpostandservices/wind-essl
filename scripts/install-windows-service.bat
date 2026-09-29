@@ -1,7 +1,7 @@
 @echo off
 :: ==============================================================================
-:: eSSL Attendance Sync - True Windows Service Installer (using NSSM)
-:: Registers the agent as a real service in services.msc (Automatic startup)
+:: eSSL Attendance Sync - Official Windows Service Installer (WinSW)
+:: Registers as a true native Windows Service in services.msc with Automatic startup
 :: ==============================================================================
 setlocal EnableDelayedExpansion
 title eSSL Attendance Sync - Windows Service Setup
@@ -17,11 +17,13 @@ if %errorLevel% neq 0 (
 cd /d "%~dp0.."
 set "APP_DIR=%CD%"
 cd /d "%~dp0"
+set "SCRIPTS_DIR=%CD%"
 
 echo ==============================================================
 echo       eSSL Attendance Sync Windows Service Setup (services.msc)
 echo ==============================================================
-echo Application Folder: %APP_DIR%
+echo Application Directory: %APP_DIR%
+echo Scripts Directory:     %SCRIPTS_DIR%
 echo.
 
 :: 2. Locate node.exe
@@ -33,92 +35,121 @@ for /f "delims=" %%I in ('where node.exe 2^>nul') do (
 if not defined NODE_EXE (
     if exist "C:\Program Files\nodejs\node.exe" set "NODE_EXE=C:\Program Files\nodejs\node.exe"
     if exist "C:\Program Files (x86)\nodejs\node.exe" set "NODE_EXE=C:\Program Files (x86)\nodejs\node.exe"
+    if exist "%LOCALAPPDATA%\Programs\nodejs\node.exe" set "NODE_EXE=%LOCALAPPDATA%\Programs\nodejs\node.exe"
 )
 if not defined NODE_EXE (
-    echo [ERROR] node.exe not found! Please install Node.js first.
+    echo [ERROR] node.exe not found! Please install Node.js (https://nodejs.org).
     pause
     exit /b 1
 )
-echo       Found Node: %NODE_EXE%
+echo       Found Node: "%NODE_EXE%"
 
-:: 3. Verify dist/index.js
-echo [2/5] Checking compiled files...
+:: 3. Verify dist/index.js compilation
+echo [2/5] Verifying application build...
 if not exist "%APP_DIR%\dist\index.js" (
-    echo       Compiling project...
+    echo       dist\index.js not found. Compiling TypeScript now...
     pushd "%APP_DIR%"
     call npm run build
     popd
 )
 if not exist "%APP_DIR%\dist\index.js" (
-    echo [ERROR] dist\index.js is missing!
+    echo [ERROR] TypeScript compilation failed or dist\index.js is missing!
+    pause
+    exit /b 1
+)
+echo       Build verified: "%APP_DIR%\dist\index.js"
+
+:: 4. Ensure directories exist
+if not exist "%APP_DIR%\logs" mkdir "%APP_DIR%\logs"
+if not exist "%APP_DIR%\data" mkdir "%APP_DIR%\data"
+
+:: 5. Generate tailored essl-service.xml with exact paths
+echo [3/5] Generating Service Configuration (essl-service.xml)...
+set "XML_FILE=%SCRIPTS_DIR%\essl-service.xml"
+
+(
+    echo ^<service^>
+    echo   ^<id^>essl-attendance-sync^</id^>
+    echo   ^<name^>eSSL Attendance Sync^</name^>
+    echo   ^<description^>Production eSSL Biometric Attendance Synchronization Background Service for eTimeTrackLite^</description^>
+    echo   ^<executable^>%NODE_EXE%^</executable^>
+    echo   ^<arguments^>"%APP_DIR%\dist\index.js" start^</arguments^>
+    echo   ^<workingdirectory^>%APP_DIR%^</workingdirectory^>
+    echo   ^<startmode^>Automatic^</startmode^>
+    echo   ^<delayedAutoStart^>false^</delayedAutoStart^>
+    echo   ^<logpath^>%APP_DIR%\logs^</logpath^>
+    echo   ^<log mode="roll-by-size"^>
+    echo     ^<sizeThreshold^>10240^</sizeThreshold^>
+    echo     ^<keepFiles^>14^</keepFiles^>
+    echo   ^</log^>
+    echo   ^<onfailure action="restart" delay="10 sec"/^>
+    echo   ^<onfailure action="restart" delay="30 sec"/^>
+    echo   ^<onfailure action="restart" delay="60 sec"/^>
+    echo   ^<resetfailure^>1 hour^</resetfailure^>
+    echo   ^<env name="NODE_ENV" value="production"/^>
+    echo ^</service^>
+) > "%XML_FILE%"
+
+echo       Configuration written to "%XML_FILE%"
+
+:: 6. Register & Start via bundled WinSW wrapper
+echo [4/5] Installing Windows Service into services.msc...
+set "WINSW_EXE=%SCRIPTS_DIR%\essl-service.exe"
+
+if not exist "%WINSW_EXE%" (
+    echo [ERROR] essl-service.exe wrapper not found in scripts folder!
     pause
     exit /b 1
 )
 
-:: 4. Ensure NSSM is available
-echo [3/5] Locating NSSM (Service Manager)...
-set "NSSM_EXE=%~dp0nssm.exe"
-if not exist "%NSSM_EXE%" (
-    for /f "delims=" %%I in ('where nssm.exe 2^>nul') do (
-        if not exist "%NSSM_EXE%" set "NSSM_EXE=%%I"
-    )
+:: Stop any legacy services first
+net stop "ESSL_Attendance_Sync" >nul 2>&1
+sc.exe delete "ESSL_Attendance_Sync" >nul 2>&1
+"%WINSW_EXE%" stop >nul 2>&1
+"%WINSW_EXE%" uninstall >nul 2>&1
+
+:: Install service
+"%WINSW_EXE%" install "%XML_FILE%"
+if %errorLevel% neq 0 (
+    echo [WARN] WinSW install returned code %errorLevel%. Retrying with default arguments...
+    "%WINSW_EXE%" install
 )
 
-if not exist "%NSSM_EXE%" (
-    echo       Downloading NSSM service wrapper...
-    powershell -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; $url = 'https://nssm.cc/release/nssm-2.24.zip'; $zip = '%~dp0nssm.zip'; try { Invoke-WebRequest -Uri $url -OutFile $zip; Expand-Archive $zip -DestinationPath '%~dp0nssm_temp' -Force; Copy-Item '%~dp0nssm_temp\nssm-2.24\win64\nssm.exe' '%NSSM_EXE%' -Force; Remove-Item $zip -Force; Remove-Item '%~dp0nssm_temp' -Recurse -Force; Write-Host 'Downloaded successfully.' } catch { Write-Host 'Download failed. Will try winget...' }" >nul 2>&1
+echo [5/5] Starting Windows Service...
+"%WINSW_EXE%" start
+if %errorLevel% neq 0 (
+    echo [INFO] Attempting net start...
+    net start "essl-attendance-sync"
 )
 
-if not exist "%NSSM_EXE%" (
-    where winget >nul 2>&1
-    if %errorLevel% equ 0 (
-        echo       Installing NSSM via Windows Package Manager (winget)...
-        winget install -e --id NSSM.NSSM --silent --accept-source-agreements --accept-package-agreements >nul 2>&1
-        for /f "delims=" %%I in ('where nssm.exe 2^>nul') do set "NSSM_EXE=%%I"
-    )
-)
+:: Allow service 4 seconds to boot
+timeout /t 4 /nobreak >nul
 
-:: Ensure logs directory
-if not exist "%APP_DIR%\logs" mkdir "%APP_DIR%\logs"
-if not exist "%APP_DIR%\data" mkdir "%APP_DIR%\data"
-
-set "SERVICE_NAME=ESSL_Attendance_Sync"
-
-if exist "%NSSM_EXE%" (
-    echo       Using NSSM: %NSSM_EXE%
-    echo [4/5] Installing Windows Service '%SERVICE_NAME%'...
-    "%NSSM_EXE%" stop "%SERVICE_NAME%" >nul 2>&1
-    "%NSSM_EXE%" remove "%SERVICE_NAME%" confirm >nul 2>&1
-
-    "%NSSM_EXE%" install "%SERVICE_NAME%" "%NODE_EXE%"
-    "%NSSM_EXE%" set "%SERVICE_NAME%" AppParameters "\"%APP_DIR%\dist\index.js\" start"
-    "%NSSM_EXE%" set "%SERVICE_NAME%" AppDirectory "%APP_DIR%"
-    "%NSSM_EXE%" set "%SERVICE_NAME%" DisplayName "eSSL Attendance Sync Service"
-    "%NSSM_EXE%" set "%SERVICE_NAME%" Description "Background synchronization service between eTimeTrackLite SQL Server and Team Management VPS"
-    "%NSSM_EXE%" set "%SERVICE_NAME%" Start SERVICE_AUTO_START
-    "%NSSM_EXE%" set "%SERVICE_NAME%" AppStdout "%APP_DIR%\logs\service-stdout.log"
-    "%NSSM_EXE%" set "%SERVICE_NAME%" AppStderr "%APP_DIR%\logs\service-stderr.log"
-    "%NSSM_EXE%" set "%SERVICE_NAME%" AppRestartDelay 10000
-
-    echo [5/5] Starting Windows Service...
-    "%NSSM_EXE%" start "%SERVICE_NAME%"
-) else (
-    echo [WARN] NSSM could not be downloaded automatically (no internet or blocked).
-    echo Falling back to Windows Startup Folder auto-start...
-    call "%~dp0install-autostart.bat"
-    exit /b
-)
-
-timeout /t 3 /nobreak >nul
-
-sc query "%SERVICE_NAME%" | findstr "STATE"
 echo.
+sc query "essl-attendance-sync" | findstr /i "STATE"
+echo.
+
+:: Verify local HTTP diagnostic server
+set "IS_RUNNING=0"
+for /f "tokens=5" %%a in ('netstat -aon 2^>nul ^| findstr ":8765" ^| findstr "LISTENING"') do (
+    set "IS_RUNNING=1"
+)
+
 echo ==============================================================
-echo [SUCCESS] Windows Service '%SERVICE_NAME%' is INSTALLED!
+if "!IS_RUNNING!"=="1" (
+    echo [SUCCESS] Windows Service 'essl-attendance-sync' is RUNNING!
+) else (
+    echo [NOTICE] Windows Service 'essl-attendance-sync' is INSTALLED!
+)
 echo.
-echo - You can view it anytime in 'services.msc'
-echo - Status: Automatic startup on Windows boot
-echo - Local Dashboard: http://127.0.0.1:8765
-echo - To stop service: run 'scripts\stop-service.bat' or 'net stop %SERVICE_NAME%'
+echo - Service Name:     eSSL Attendance Sync (essl-attendance-sync)
+echo - Visible In:       services.msc (Startup type: Automatic)
+echo - Local Dashboard:  http://127.0.0.1:8765
+echo - Service Logs:     %APP_DIR%\logs\
+echo.
+echo Useful Commands:
+echo - Restart service:  scripts\restart-service.bat
+echo - Stop service:     scripts\stop-service.bat
+echo - Uninstall:        scripts\uninstall-service.bat
 echo ==============================================================
 pause
