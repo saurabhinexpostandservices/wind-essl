@@ -33,6 +33,9 @@ export interface AgentConfig {
         intervalMs: number;
         batchSize: number;
         timezone: string;
+        startDate?: string;
+        registeredOnly: boolean;
+        employeeCodes: string[];
         dataPath: string;
         stateFile: string;
         dbFile: string;
@@ -92,6 +95,12 @@ export function loadConfig(): AgentConfig {
             intervalMs: parseInt(process.env.SYNC_INTERVAL || "30000", 10),
             batchSize: parseInt(process.env.BATCH_SIZE || "1000", 10),
             timezone: process.env.TIMEZONE || "Asia/Kolkata",
+            startDate: process.env.SYNC_START_DATE || "",
+            registeredOnly: process.env.SYNC_REGISTERED_ONLY !== "false",
+            employeeCodes: (process.env.SYNC_EMPLOYEE_CODES || "")
+                .split(",")
+                .map((s) => s.trim().toUpperCase())
+                .filter(Boolean),
             dataPath: dataDir,
             stateFile: path.join(dataDir, "sync-state.json"),
             dbFile: path.join(dataDir, "sync-state.db"),

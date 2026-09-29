@@ -19,7 +19,7 @@ async function main() {
     const stateManager = new StateManager(config.sync.dataPath, logger);
     const apiClient = new ApiClient(config.api, logger);
     const batchSender = new BatchSender(apiClient, config.api.deviceId, logger);
-    const syncEngine = new SyncEngine(config, db, stateManager, batchSender, logger);
+    const syncEngine = new SyncEngine(config, db, stateManager, batchSender, logger, apiClient);
     const healthServer = new HealthServer(config, db, stateManager, syncEngine, apiClient, logger);
 
     const gracefulShutdown = async (signal: string) => {
@@ -57,7 +57,8 @@ async function main() {
                         lastDirection: state.lastDirection!,
                         lastDeviceName: state.lastDeviceName!,
                     } : null;
-                    pendingCount = await db.getPendingCount(cursor);
+                    const allowed = await syncEngine.getAllowedEmployees();
+                    pendingCount = await db.getPendingCount(cursor, allowed, config.sync.startDate || undefined);
                 }
 
                 console.log("\n==========================================");

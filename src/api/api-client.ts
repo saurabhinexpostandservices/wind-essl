@@ -157,4 +157,41 @@ export class ApiClient {
             }
         }
     }
+
+    /**
+     * Fetch list of active employee codes registered in Leave Management System (VPS)
+     */
+    public async getActiveEmployees(): Promise<string[]> {
+        try {
+            const endpointUrl = this.config.url.replace(/\/attendance\/?$/, "/active-employees");
+            const controller = new AbortController();
+            const timeout = setTimeout(() => controller.abort(), 15000);
+
+            const res = await fetch(endpointUrl, {
+                method: "GET",
+                signal: controller.signal,
+                headers: {
+                    "X-API-Key": this.config.apiKey,
+                    Authorization: `Bearer ${this.config.apiKey}`,
+                    Accept: "application/json",
+                },
+            });
+            clearTimeout(timeout);
+
+            if (res.ok) {
+                const json: any = await res.json();
+                const codes = json?.data?.employeeCodes || json?.employeeCodes || [];
+                const list = (Array.isArray(codes) ? codes : [])
+                    .map((c: any) => String(c).trim().toUpperCase())
+                    .filter(Boolean);
+                this.logger.info(`Fetched ${list.length} active registered employee codes from LMS.`);
+                return list;
+            }
+            this.logger.warn(`Failed to fetch active LMS employees from VPS: HTTP ${res.status}`);
+            return [];
+        } catch (err: any) {
+            this.logger.warn(`Could not reach VPS active-employees endpoint: ${err?.message || err}`);
+            return [];
+        }
+    }
 }

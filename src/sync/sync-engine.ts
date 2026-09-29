@@ -5,6 +5,8 @@ import { BatchSender } from "./batch-sender.js";
 import { Logger } from "../logging/logger.js";
 import { AttendanceCursor } from "../database/queries.js";
 
+import { ApiClient } from "../api/api-client.js";
+
 export interface SyncEngineStatus {
     isSyncing: boolean;
     lastSyncTime: string | null;
@@ -20,25 +22,30 @@ export class SyncEngine {
     private stateManager: StateManager;
     private batchSender: BatchSender;
     private logger: Logger;
+    private apiClient?: ApiClient;
 
     private isRunning = false;
     private isSyncing = false;
     private timer: NodeJS.Timeout | null = null;
     private currentBatchCount = 0;
     private lastError: string | null = null;
+    private cachedAllowedEmployees: string[] = [];
+    private lastEmployeesFetch = 0;
 
     constructor(
         config: AgentConfig,
         db: SqlServerDatabase,
         stateManager: StateManager,
         batchSender: BatchSender,
-        logger: Logger
+        logger: Logger,
+        apiClient?: ApiClient
     ) {
         this.config = config;
         this.db = db;
         this.stateManager = stateManager;
         this.batchSender = batchSender;
         this.logger = logger;
+        this.apiClient = apiClient;
     }
 
     private getCursor(): AttendanceCursor | null {
@@ -62,16 +69,52 @@ export class SyncEngine {
     }
 
     /**
+     * Get list of allowed employee codes (from config override or dynamic LMS API)
+     */
+    public async getAllowedEmployees(): Promise<string[]> {
+        if (this.config.sync.employeeCodes && this.config.sync.employeeCodes.length > 0) {
+            return this.config.sync.employeeCodes;
+        }
+
+        if (!this.config.sync.registeredOnly || !this.apiClient) {
+            return [];
+        }
+
+        const now = Date.now();
+        // Cache active employees list for 15 minutes
+        if (this.cachedAllowedEmployees.length > 0 && now - this.lastEmployeesFetch < 15 * 60 * 1000) {
+            return this.cachedAllowedEmployees;
+        }
+
+        const codes = await this.apiClient.getActiveEmployees();
+        if (codes && codes.length > 0) {
+            this.cachedAllowedEmployees = codes;
+            this.lastEmployeesFetch = now;
+            this.logger.info(`Targeted Sync: Filtering attendance strictly for ${codes.length} registered LMS employees.`);
+        }
+        return this.cachedAllowedEmployees;
+    }
+
+    /**
      * Perform a dry run without sending data or updating state
      */
     public async runDryRun(): Promise<{ totalInDb: number; pendingCount: number; sampleBatchSize: number }> {
         this.logger.info("Executing DRY RUN (No records will be sent to VPS, state will not change)");
         const total = await this.db.getTotalCount();
         const cursor = this.getCursor();
-        const pending = await this.db.getPendingCount(cursor);
-        const sampleRows = await this.db.fetchBatch(Math.min(10, this.config.sync.batchSize), cursor);
+        const allowed = await this.getAllowedEmployees();
+        const startDate = this.config.sync.startDate || undefined;
 
-        this.logger.info(`Dry Run Summary: Total in DB: ${total} | Pending after cursor: ${pending}`);
+        const pending = await this.db.getPendingCount(cursor, allowed, startDate);
+        const sampleRows = await this.db.fetchBatch(Math.min(10, this.config.sync.batchSize), cursor, allowed, startDate);
+
+        this.logger.info(`Dry Run Summary: Total in DB: ${total} | Filtered Pending after cursor: ${pending}`);
+        if (allowed && allowed.length > 0) {
+            this.logger.info(`Filtering by ${allowed.length} registered LMS employees: ${allowed.slice(0, 10).join(", ")}${allowed.length > 10 ? "..." : ""}`);
+        }
+        if (startDate) {
+            this.logger.info(`Filtering attendance records starting after: ${startDate}`);
+        }
         if (sampleRows.length > 0) {
             this.logger.info(`Preview of first ${sampleRows.length} pending records:`);
             sampleRows.forEach((r, idx) => {
@@ -80,7 +123,7 @@ export class SyncEngine {
                 );
             });
         } else {
-            this.logger.info("No pending records to synchronize.");
+            this.logger.info("No pending records to synchronize for matched employees.");
         }
 
         return {
@@ -113,13 +156,21 @@ export class SyncEngine {
         let totalRecordsCycle = 0;
 
         try {
+            const allowed = await this.getAllowedEmployees();
+            const startDate = this.config.sync.startDate || undefined;
+
             while (true) {
                 const cursor = this.getCursor();
                 this.logger.debug(
                     `Reading batch of up to ${this.config.sync.batchSize} records (Cursor: ${cursor ? cursor.lastLogDateTime : "START"})`
                 );
 
-                const rows = await this.db.fetchBatch(this.config.sync.batchSize, cursor);
+                const rows = await this.db.fetchBatch(
+                    this.config.sync.batchSize,
+                    cursor,
+                    allowed,
+                    startDate
+                );
 
                 if (!rows || rows.length === 0) {
                     this.logger.debug("No new records to synchronize.");
@@ -220,7 +271,9 @@ export class SyncEngine {
 
         try {
             if (await this.db.isConnected()) {
-                pending = await this.db.getPendingCount(this.getCursor());
+                const allowed = await this.getAllowedEmployees();
+                const startDate = this.config.sync.startDate || undefined;
+                pending = await this.db.getPendingCount(this.getCursor(), allowed, startDate);
             }
         } catch {
             // Ignore status query failure

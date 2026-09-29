@@ -164,120 +164,211 @@ export class SqlServerDatabase {
         return result.recordset[0]?.total || 0;
     }
 
-    public async getPendingCount(cursor: AttendanceCursor | null): Promise<number> {
+    public async getPendingCount(
+        cursor: AttendanceCursor | null,
+        allowedEmpCodes?: string[],
+        minStartDate?: Date | string
+    ): Promise<number> {
+        const allowed = allowedEmpCodes && allowedEmpCodes.length > 0
+            ? allowedEmpCodes.map((c) => c.toUpperCase())
+            : null;
+
         if (this.isMock) {
             this.initMockDb();
-            if (!cursor || !cursor.lastLogDateTime) {
-                return this.getTotalCount();
-            }
-            const dateStr =
-                cursor.lastLogDateTime instanceof Date
+            let whereClause = "1=1";
+            const params: any[] = [];
+
+            if (cursor && cursor.lastLogDateTime) {
+                const dateStr = cursor.lastLogDateTime instanceof Date
                     ? cursor.lastLogDateTime.toISOString()
                     : new Date(cursor.lastLogDateTime).toISOString();
-
-            const stmt = this.mockDb.prepare(`
-                SELECT COUNT(*) AS pending
-                FROM dbo_GREYTIP
-                WHERE (
+                whereClause += ` AND (
                     LogDateTime > ?
                     OR (LogDateTime = ? AND EmpCode > ?)
                     OR (LogDateTime = ? AND EmpCode = ? AND Direction > ?)
                     OR (LogDateTime = ? AND EmpCode = ? AND Direction = ? AND DeviceName > ?)
-                )
-            `);
-            const row = stmt.get(
-                dateStr,
-                dateStr, cursor.lastEmpCode,
-                dateStr, cursor.lastEmpCode, cursor.lastDirection,
-                dateStr, cursor.lastEmpCode, cursor.lastDirection, cursor.lastDeviceName
-            );
+                )`;
+                params.push(
+                    dateStr,
+                    dateStr, cursor.lastEmpCode,
+                    dateStr, cursor.lastEmpCode, cursor.lastDirection,
+                    dateStr, cursor.lastEmpCode, cursor.lastDirection, cursor.lastDeviceName
+                );
+            } else if (minStartDate) {
+                const minStr = minStartDate instanceof Date ? minStartDate.toISOString() : new Date(minStartDate).toISOString();
+                whereClause += ` AND LogDateTime >= ?`;
+                params.push(minStr);
+            }
+
+            if (allowed && allowed.length > 0) {
+                const placeholders = allowed.map(() => "?").join(",");
+                whereClause += ` AND EmpCode IN (${placeholders})`;
+                params.push(...allowed);
+            }
+
+            const stmt = this.mockDb.prepare(`SELECT COUNT(*) AS pending FROM dbo_GREYTIP WHERE ${whereClause}`);
+            const row = stmt.get(...params);
             return row?.pending || 0;
         }
 
         const pool = await this.connect();
         const request = pool.request();
 
-        if (!cursor || !cursor.lastLogDateTime) {
-            return await this.getTotalCount();
-        }
+        let whereClause = "1=1";
 
-        const dateVal =
-            cursor.lastLogDateTime instanceof Date
+        if (cursor && cursor.lastLogDateTime) {
+            const dateVal = cursor.lastLogDateTime instanceof Date
                 ? cursor.lastLogDateTime
                 : new Date(cursor.lastLogDateTime);
+            request.input("lastLogDateTime", sql.DateTime, dateVal);
+            request.input("lastEmpCode", sql.NVarChar, cursor.lastEmpCode);
+            request.input("lastDirection", sql.NVarChar, cursor.lastDirection);
+            request.input("lastDeviceName", sql.NVarChar, cursor.lastDeviceName);
+            whereClause += ` AND (
+                LogDateTime > @lastLogDateTime
+                OR (LogDateTime = @lastLogDateTime AND EmpCode > @lastEmpCode)
+                OR (LogDateTime = @lastLogDateTime AND EmpCode = @lastEmpCode AND Direction > @lastDirection)
+                OR (LogDateTime = @lastLogDateTime AND EmpCode = @lastEmpCode AND Direction = @lastDirection AND DeviceName > @lastDeviceName)
+            )`;
+        } else if (minStartDate) {
+            const minDateVal = minStartDate instanceof Date ? minStartDate : new Date(minStartDate);
+            request.input("minStartDate", sql.DateTime, minDateVal);
+            whereClause += ` AND LogDateTime >= @minStartDate`;
+        }
 
-        request.input("lastLogDateTime", sql.DateTime, dateVal);
-        request.input("lastEmpCode", sql.NVarChar, cursor.lastEmpCode);
-        request.input("lastDirection", sql.NVarChar, cursor.lastDirection);
-        request.input("lastDeviceName", sql.NVarChar, cursor.lastDeviceName);
+        if (allowed && allowed.length > 0) {
+            const paramNames = allowed.map((code, idx) => {
+                const pName = `emp_${idx}`;
+                request.input(pName, sql.NVarChar, code);
+                return `@${pName}`;
+            });
+            whereClause += ` AND EmpCode IN (${paramNames.join(",")})`;
+        }
 
-        const result = await request.query(SQL_QUERIES.COUNT_PENDING_AFTER_CURSOR);
+        const queryStr = `SELECT COUNT(*) AS pending FROM dbo.GREYTIP WHERE ${whereClause}`;
+        const result = await request.query(queryStr);
         return result.recordset[0]?.pending || 0;
     }
 
     public async fetchBatch(
         batchSize: number,
-        cursor: AttendanceCursor | null
+        cursor: AttendanceCursor | null,
+        allowedEmpCodes?: string[],
+        minStartDate?: Date | string
     ): Promise<RawAttendanceRow[]> {
+        const allowed = allowedEmpCodes && allowedEmpCodes.length > 0
+            ? allowedEmpCodes.map((c) => c.toUpperCase())
+            : null;
+
         if (this.isMock) {
             this.initMockDb();
-            if (!cursor || !cursor.lastLogDateTime) {
-                const stmt = this.mockDb.prepare(`
-                    SELECT EmpCode, LogDateTime, Direction, DeviceName
-                    FROM dbo_GREYTIP
-                    ORDER BY LogDateTime ASC, EmpCode ASC, Direction ASC, DeviceName ASC
-                    LIMIT ?
-                `);
-                return stmt.all(batchSize);
-            }
+            let whereClause = "1=1";
+            const params: any[] = [];
 
-            const dateStr =
-                cursor.lastLogDateTime instanceof Date
+            if (cursor && cursor.lastLogDateTime) {
+                const dateStr = cursor.lastLogDateTime instanceof Date
                     ? cursor.lastLogDateTime.toISOString()
                     : new Date(cursor.lastLogDateTime).toISOString();
-
-            const stmt = this.mockDb.prepare(`
-                SELECT EmpCode, LogDateTime, Direction, DeviceName
-                FROM dbo_GREYTIP
-                WHERE (
+                whereClause += ` AND (
                     LogDateTime > ?
                     OR (LogDateTime = ? AND EmpCode > ?)
                     OR (LogDateTime = ? AND EmpCode = ? AND Direction > ?)
                     OR (LogDateTime = ? AND EmpCode = ? AND Direction = ? AND DeviceName > ?)
-                )
+                )`;
+                params.push(
+                    dateStr,
+                    dateStr, cursor.lastEmpCode,
+                    dateStr, cursor.lastEmpCode, cursor.lastDirection,
+                    dateStr, cursor.lastEmpCode, cursor.lastDirection, cursor.lastDeviceName
+                );
+            } else if (minStartDate) {
+                const minStr = minStartDate instanceof Date ? minStartDate.toISOString() : new Date(minStartDate).toISOString();
+                whereClause += ` AND LogDateTime >= ?`;
+                params.push(minStr);
+            }
+
+            if (allowed && allowed.length > 0) {
+                const placeholders = allowed.map(() => "?").join(",");
+                whereClause += ` AND EmpCode IN (${placeholders})`;
+                params.push(...allowed);
+            }
+
+            const query = `
+                SELECT EmpCode, LogDateTime, Direction, DeviceName
+                FROM dbo_GREYTIP
+                WHERE ${whereClause}
                 ORDER BY LogDateTime ASC, EmpCode ASC, Direction ASC, DeviceName ASC
                 LIMIT ?
-            `);
-            return stmt.all(
-                dateStr,
-                dateStr, cursor.lastEmpCode,
-                dateStr, cursor.lastEmpCode, cursor.lastDirection,
-                dateStr, cursor.lastEmpCode, cursor.lastDirection, cursor.lastDeviceName,
-                batchSize
-            );
+            `;
+            params.push(batchSize);
+            const rows: any[] = this.mockDb.prepare(query).all(...params);
+            return rows;
         }
 
         const pool = await this.connect();
         const request = pool.request();
         request.input("batchSize", sql.Int, batchSize);
 
-        if (!cursor || !cursor.lastLogDateTime) {
-            const result = await request.query(SQL_QUERIES.FETCH_INITIAL_BATCH);
-            return result.recordset || [];
-        }
+        let whereClause = "1=1";
 
-        const dateVal =
-            cursor.lastLogDateTime instanceof Date
+        if (cursor && cursor.lastLogDateTime) {
+            const dateVal = cursor.lastLogDateTime instanceof Date
                 ? cursor.lastLogDateTime
                 : new Date(cursor.lastLogDateTime);
+            request.input("lastLogDateTime", sql.DateTime, dateVal);
+            request.input("lastEmpCode", sql.NVarChar, cursor.lastEmpCode);
+            request.input("lastDirection", sql.NVarChar, cursor.lastDirection);
+            request.input("lastDeviceName", sql.NVarChar, cursor.lastDeviceName);
+            whereClause += ` AND (
+                LogDateTime > @lastLogDateTime
+                OR (LogDateTime = @lastLogDateTime AND EmpCode > @lastEmpCode)
+                OR (LogDateTime = @lastLogDateTime AND EmpCode = @lastEmpCode AND Direction > @lastDirection)
+                OR (LogDateTime = @lastLogDateTime AND EmpCode = @lastEmpCode AND Direction = @lastDirection AND DeviceName > @lastDeviceName)
+            )`;
+        } else if (minStartDate) {
+            const minDateVal = minStartDate instanceof Date ? minStartDate : new Date(minStartDate);
+            request.input("minStartDate", sql.DateTime, minDateVal);
+            whereClause += ` AND LogDateTime >= @minStartDate`;
+        }
 
-        request.input("lastLogDateTime", sql.DateTime, dateVal);
-        request.input("lastEmpCode", sql.NVarChar, cursor.lastEmpCode);
-        request.input("lastDirection", sql.NVarChar, cursor.lastDirection);
-        request.input("lastDeviceName", sql.NVarChar, cursor.lastDeviceName);
+        if (allowed && allowed.length > 0) {
+            const paramNames = allowed.map((code, idx) => {
+                const pName = `emp_${idx}`;
+                request.input(pName, sql.NVarChar, code);
+                return `@${pName}`;
+            });
+            whereClause += ` AND EmpCode IN (${paramNames.join(",")})`;
+        }
 
-        const result = await request.query(SQL_QUERIES.FETCH_INCREMENTAL_BATCH);
-        return result.recordset || [];
+        const queryStr = `
+            SELECT TOP (@batchSize)
+                EmpCode,
+                LogDateTime,
+                Direction,
+                DeviceName
+            FROM dbo.GREYTIP
+            WHERE ${whereClause}
+            ORDER BY
+                LogDateTime ASC,
+                EmpCode ASC,
+                Direction ASC,
+                DeviceName ASC
+        `;
+
+        const result = await request.query(queryStr);
+        let rows: RawAttendanceRow[] = result.recordset || [];
+
+        // Additional in-memory verification guarantee
+        if (allowed && allowed.length > 0) {
+            const allowedSet = new Set(allowed);
+            rows = rows.filter((r) => allowedSet.has(r.EmpCode.toUpperCase()));
+        }
+        if (minStartDate) {
+            const minMs = new Date(minStartDate).getTime();
+            rows = rows.filter((r) => new Date(r.LogDateTime).getTime() >= minMs);
+        }
+
+        return rows;
     }
 
     public async disconnect(): Promise<void> {
